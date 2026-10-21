@@ -16,7 +16,6 @@ public class StrongholdOverlay extends OverlayPanel {
     StrongholdOverlay(StrongholdScript script) {
         this.script = script;
         setPosition(OverlayPosition.TOP_LEFT);
-        setNillable(true);
     }
 
     @Override
