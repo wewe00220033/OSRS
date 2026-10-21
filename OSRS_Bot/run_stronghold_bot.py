@@ -15,13 +15,8 @@ if hasattr(sys.stderr, "reconfigure"):
 # يعمل محلياً 100% بدون نت ولا ذكاء اصطناعي وبدون استهلاك أي كوتا!
 # ==============================================================================
 
-TOKEN_PATH = r"C:\Users\USER\.runelite\.agent-token"
-if not os.path.exists(TOKEN_PATH):
-    print("❌ خطأ: ملف التوكن غير موجود! تأكد إن RuneLite شغال والـ Agent Server متفعل.")
-    input("اضغط Enter للخروج...")
-    sys.exit(1)
-
-TOKEN = open(TOKEN_PATH).read().strip()
+TOKEN_PATH = os.environ.get("OSRS_AGENT_TOKEN_PATH", os.path.expanduser("~/.runelite/.agent-token"))
+TOKEN = ""
 HEADERS = {"X-Agent-Token": TOKEN, "Content-Type": "application/json"}
 BASE_URL = "http://127.0.0.1:8081"
 def api_get(endpoint):
@@ -62,7 +57,7 @@ STRONGHOLD_DOOR_NAMES = ["Oozing barrier", "Portal of Death", "Gate of War", "Ri
 def handle_dialogue_and_modals():
     # 1. شباك التحذير للسلالم (groupId: 579, childId: 17)
     api_post("/widgets/click", {"groupId": 579, "childId": 17})
-    
+
     # 2. الحوارات والأسئلة (تكامل ذكي مع مساعد الأمان المعزول)
     handled = False
     for _ in range(5):
@@ -70,25 +65,31 @@ def handle_dialogue_and_modals():
         if not d.get("inDialogue"):
             break
         handled = True
-        
+
         if d.get("hasOptions") or d.get("hasSelectAnOption"):
-            opts = d.get("options", [])
+            raw_opts = d.get("options", [])
             q = d.get("question", "") or d.get("dialogueText", "")
-            
-            # استدعاء المساعد الذكي المعزول (0ms للكاش + Groq AI للجديد)
+
+            # استبعاد رسائل الانتظار أو النوافذ المؤقتة قبل اتخاذ القرار
+            opts = [o for o in raw_opts if isinstance(o, str) and o.strip().lower().rstrip(".!?") not in ("please wait", "click here to continue")]
+            if not opts:
+                time.sleep(0.5)
+                continue
+
+            # استدعاء المساعد المعزول (كاش محلي فقط بدون أي خدمات خارجية)
             selected = solve_security_dialogue(q, opts)
-            
+
             if selected:
                 print(f"💬 اختيار الإجابة: {selected}")
                 api_post("/dialogue/select", {"option": selected})
                 time.sleep(1.2)
             else:
-                print(f"⚠️ خيارات بدون اختيار: {opts}")
-                time.sleep(0.5)
+                raise SafetyStop(f"إجابة غير معروفة؛ أجب يدوياً ثم أعد التشغيل: {opts}")
+
         elif d.get("hasContinue"):
             api_post("/dialogue/continue", {})
             time.sleep(0.8)
-            
+
     return handled
 
 def check_and_eat_food():
@@ -156,26 +157,26 @@ def walk_to(x, y, plane=0, timeout=75):
     start_t = time.time()
     last_move_t = time.time()
     last_px, last_py = 0, 0
-    
+
     while time.time() - start_t < timeout:
         check_and_eat_food()
-        
+
         # لو في حوار نجاوبه فوراً
         if handle_dialogue_and_modals():
             last_move_t = time.time()
             time.sleep(1)
             api_post("/walk", {"x": x, "y": y, "plane": plane, "wait": False})
             continue
-            
+
         st = api_get("/state")
         pos = st.get("player", {}).get("position", {})
         px, py, p_plane = pos.get("x", 0), pos.get("y", 0), pos.get("plane", 0)
-        
+
         # التأكد من الوصول للهدف
         if abs(px - x) <= 3 and abs(py - y) <= 3 and p_plane == plane:
             print(f"📍 وصل بنجاح إلى الهدف: ({px}, {py})")
             return True
-            
+
         # رصد الحركة لتجاوز عوائق الأبواب
         if px != last_px or py != last_py:
             last_move_t = time.time()
@@ -192,7 +193,7 @@ def walk_to(x, y, plane=0, timeout=75):
                         continue
                 api_post("/walk", {"x": x, "y": y, "plane": plane, "wait": False})
                 last_move_t = time.time()
-                
+
         time.sleep(1)
     print(f"⚠️ انتهت المهلة ({timeout}ث)، الموقع الحالي: ({px}, {py}, plane: {p_plane})")
     return False
@@ -212,12 +213,12 @@ def main():
     print("=" * 65)
 
     ensure_login()
-    
+
     st = api_get("/state")
     if "error" in st:
         print("\n❌ تنبيه هام:")
         print("مش قادرين نتصل بـ Microbot على المنفذ 8081!")
-        print("السبب: اللعبة المفتوحة حالياً هي RuneLite العادية (مش نسخة البوت الآلي).")
+        print("تعذر الاتصال بالخادم المحلي؛ قد يكون متوقفاً أو المنفذ أو التوكن غير صحيح.")
         print("الحل في ثانية: اقفل اللعبة المفتوحة حالياً، وافتحها من أيقونة 'تشغيل_البوت.bat' اللي على سطح المكتب.")
         print("أول ما تفتح اللعبة وتسجل دخول، شغل ملف 'تشغيل_بوت_السترونج_هولد.bat' وهيشتغل فوراً!")
         input("\nاضغط Enter للخروج...")
@@ -235,7 +236,7 @@ def main():
         print("\n--- [المرحلة 1]: التوجه لمدخل الـ Stronghold في قرية البرابرة ---")
         if not walk_to(3080, 3419, plane=0, timeout=160):
             walk_to(3080, 3419, plane=0, timeout=80)
-        
+
         print("\n--- [المرحلة 2]: النزول داخل الكهف (الطابق الأول) ---")
         for attempt in range(5):
             interact_object(20790, "Climb-down")
@@ -333,7 +334,9 @@ def main():
                 if vb3 == 1:
                     print("💰 مبروووك! تم استلام الـ 5,000 GP بنجاح!")
                     break
-        
+
+        if api_get("/varbits?id=2311").get("value") != 1:
+            raise SafetyStop("لم يتم تأكيد مكافأة الطابق الثالث؛ لن ننزل للطابق الرابع")
         print("\n--- [المرحلة 6]: النزول للطابق الرابع عبر السلم (23706) ---")
         walk_to(2147, 5284, plane=0, timeout=30)
         for attempt in range(5):
@@ -388,6 +391,8 @@ def main():
                     print("👟 مبروووك! تم اختيار وحصد Fancy Boots بنجاح!")
                     break
 
+        if api_get("/varbits?id=2312").get("value") != 1:
+            raise SafetyStop("لم يتم تأكيد مكافأة الطابق الرابع")
         print("\n--- [المرحلة 8]: الهروب للسطح عبر الحبل العظمي (Bone Chain: 23732) ---")
         walk_to(2349, 5215, plane=0, timeout=20)
         for attempt in range(4):
@@ -412,23 +417,86 @@ def main():
         print("⚠️ تنبيه هندسي: لم يتم حصد كامل المكافآت بنجاح بعد!")
         print(f"📌 حالة الطابق 3 (5,000 GP): {'✅ تم الاستلام' if vb3 == 1 else '❌ لم يتم الاستلام (Varbit 2311 == 0)'}")
         print(f"📌 حالة الطابق 4 (Fancy Boots): {'✅ تم الاستلام' if vb4 == 1 else '❌ لم يتم الاستلام (Varbit 2312 == 0)'}")
-        print("💡 أعد تشغيل البوت لإكمال الطابق المتبقي دون تكرار الطوابق السابقة.")
+        print("راجع الموقع والدم والطعام يدوياً قبل أي إعادة تشغيل.")
         print("!" * 65)
         input("\nاضغط Enter للإغلاق...")
         return
 
     print("\n--- [المرحلة 9]: التوجه لبنك الـ Grand Exchange لحفظ كل الأرباح والجزمة ---")
     walk_to(3164, 3487, plane=0, timeout=75)
-    api_post("/bank/open", {})
+    controller.require(api_post("/bank/open", {}), "فتح البنك")
     time.sleep(2)
-    api_post("/bank/deposit", {"all": True})
+    controller.require(api_post("/bank/deposit", {"all": True}), "طلب الإيداع")
     time.sleep(1)
     api_post("/bank/close", {})
 
     print("\n" + "=" * 65)
-    print("🎉 مبروووك يا بطل! تم إنجاز المهمة بنجاح 100% وحفظ كل شيء بالبنك!")
+    print("تم قبول طلب الإيداع؛ راجع محتويات البنك يدوياً، لم يُتحقق من الرصيد النهائي.")
     print("=" * 65)
     input("اضغط Enter للإغلاق...")
 
+# Fail-closed overrides; latest upstream route is retained, not certified.
+from safety import SafetyStop, SafetyController
+controller = SafetyController(api_get, api_post)
+_original_handle = handle_dialogue_and_modals
+
+def handle_dialogue_and_modals():
+    controller.check()
+    return _original_handle()
+
+def check_and_eat_food():
+    controller.check()
+
+def try_pass_door(door_name="Oozing barrier"):
+    before = controller.check()
+    for action in ("Pass-through", "Open"):
+        result = api_post("/objects/interact", {"name": door_name, "action": action})
+        if result.get("success") is True:
+            print("تم قبول التفاعل؛ لم يتم تأكيد عبور الحاجز بعد.")
+            for _ in range(8):
+                time.sleep(0.5)
+                handle_dialogue_and_modals()
+                after = controller.check()
+                if after != before:
+                    print("رُصد تغير الموقع فقط؛ المحطة التالية ستتحقق من الوصول.")
+                    return True
+            raise SafetyStop("لم تُرصد حركة بعد التفاعل مع الباب")
+    raise SafetyStop("فشل التفاعل مع الباب")
+
+def try_open_nearby_doors():
+    # No blind nearest-door interaction: it may send the player backwards.
+    raise SafetyStop("المسار متوقف؛ يلزم فحص الباب والمسار يدوياً، لن نختار باباً عشوائياً")
+
+def walk_to(x, y, plane=0, timeout=75):
+    controller.check()
+    controller.require(api_post("/walk", {"x": x, "y": y, "plane": plane, "wait": False}), "المشي")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pos = controller.check()
+        if pos[2] == plane and max(abs(pos[0]-x), abs(pos[1]-y)) <= 1:
+            print(f"وصل إلى جوار الهدف: {pos}")
+            return True
+        handle_dialogue_and_modals()
+        time.sleep(0.5)
+    raise SafetyStop(f"انتهت مهلة المشي إلى {(x, y, plane)}؛ لن تُنفذ الخطوة التالية")
+
+def interact_object(obj_id, action):
+    controller.check()
+    # Only the explicitly requested surface exit may change underground status.
+    if obj_id == 23732 and action == "Climb-up":
+        controller.allow_surface_exit = True
+    result = api_post("/objects/interact", {"id": obj_id, "action": action})
+    controller.require(result, f"التفاعل {obj_id}")
+    time.sleep(0.6)
+    handle_dialogue_and_modals()
+    return result
+
 if __name__ == "__main__":
-    main()
+    try:
+        with open(TOKEN_PATH, encoding="utf-8") as token_file:
+            HEADERS["X-Agent-Token"] = token_file.read().strip()
+        main()
+    except (SafetyStop, OSError, KeyboardInterrupt) as exc:
+        print(f"\nتوقف آمن للسكربت: {exc}")
+        print("توقف السكربت لا يوقف قتال اللعبة ولا يضمن سلامة الشخصية. تولَّ التحكم يدوياً فوراً.")
+        sys.exit(1)
